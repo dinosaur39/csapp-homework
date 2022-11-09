@@ -26,3 +26,4 @@ can compile (use flag -Og) and disassemble it to look for gadgets.
 Utility program to generate byte sequences.  See documentation in lab
 handout.
 
+For self-study students, run ctarget and rtarget with option '-q'
