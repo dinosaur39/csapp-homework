@@ -26,4 +26,17 @@ can compile (use flag -Og) and disassemble it to look for gadgets.
 Utility program to generate byte sequences.  See documentation in lab
 handout.
 
-For self-study students, run ctarget and rtarget with option '-q'
+     generate_solution.sh
+
+Generate solution file solution[level].txt by:  
+> ./generate_solution.sh <level>
+where <level> is a digit.
+
+Run:
+
+To solve the lab, feed the solution.txt to ctarget or rtarget. For example:
+> ./ctarget -q < solution2.txt
+
+
+
+
