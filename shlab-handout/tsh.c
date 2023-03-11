@@ -325,6 +325,61 @@ int builtin_cmd(char **argv)
  */
 void do_bgfg(char **argv)
 {
+    if (argv[1] == NULL) {
+        printf("%s command requires PID or %%jobid argument\n", argv[0]);
+        return;
+    }
+    if (argv[2] != NULL) {
+        printf("%s: Too many arguments\n", argv[0]);
+        return;
+    }
+
+    int is_jobid = 0, id = 0, is_validid = 1, c;
+    pid_t pid;
+    struct job_t *job;
+    const char *id_str = argv[1];
+    // set id string to int
+    if (*id_str == '%') {
+        id_str++;
+        is_jobid = 1;
+    }
+    while (*id_str) {
+        c = *id_str - '0';
+        if (c >= 0 && c <= 9) {
+            id = id * 10 + c;
+        } else {
+            is_validid = 0;
+            break;
+        }
+        id_str++;
+    }
+    if (!is_validid || !strcmp(argv[1], "%%")) {
+        printf("%s: argument must be a PID or %%jobid\n", argv[0]);
+        return;
+    }
+
+    if (is_jobid) {
+        job = getjobjid(jobs, id);
+        if (!job) {
+            printf("%s: No such job\n", argv[1]);
+            return;
+        }
+    } else {
+        job = getjobpid(jobs, (pid_t) id);
+        if (!job) {
+            printf("(%s): No such process\n", argv[1]);
+            return;
+        }
+    }
+    id = job->jid;
+    pid = job->pid;
+    job->state = (strcmp(argv[0], "fg") ? BG : FG);
+    kill(-pid, SIGCONT);
+    if (job->state == BG) {
+        printf("[%d] (%d) %s", id, pid, job->cmdline);
+    } else {
+        waitfg(pid);
+    }
     return;
 }
 
@@ -398,9 +453,12 @@ void sigtstp_handler(int sig)
 {
     pid_t fg_gpid = fgpid(jobs);
     if (fg_gpid) {
-        int fgjid = pid2jid(fg_gpid);
+
+        struct job_t *job = getjobpid(jobs, fg_gpid);
+        int fgjid = job->jid;
+        job->state = ST;
         kill(-fg_gpid, SIGTSTP);
-        printf("Job [%d] (%d) stopped by signal %d\n", fgjid, fg_gpid, SIGINT);
+        printf("Job [%d] (%d) stopped by signal %d\n", fgjid, fg_gpid, SIGTSTP);
     }
     return;
 }
