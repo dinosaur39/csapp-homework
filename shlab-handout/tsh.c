@@ -303,7 +303,7 @@ int parseline(const char *cmdline, char **argv)
  */
 int builtin_cmd(char **argv)
 {
-    if (!strcmp(argv[0], "quit"))
+    if (!strcmp(argv[0], "quit") || !strcmp(argv[0], "q"))
     {
         exit(0);
     }
@@ -380,6 +380,12 @@ void sigchld_handler(int sig)
  */
 void sigint_handler(int sig)
 {
+    pid_t fg_gpid = fgpid(jobs);
+    if (fg_gpid) {
+        int fgjid = pid2jid(fg_gpid);
+        kill(-fg_gpid, SIGINT);
+        printf("Job [%d] (%d) terminated by signal %d\n", fgjid, fg_gpid, SIGINT);
+    }
     return;
 }
 
@@ -390,6 +396,12 @@ void sigint_handler(int sig)
  */
 void sigtstp_handler(int sig)
 {
+    pid_t fg_gpid = fgpid(jobs);
+    if (fg_gpid) {
+        int fgjid = pid2jid(fg_gpid);
+        kill(-fg_gpid, SIGTSTP);
+        printf("Job [%d] (%d) stopped by signal %d\n", fgjid, fg_gpid, SIGINT);
+    }
     return;
 }
 
