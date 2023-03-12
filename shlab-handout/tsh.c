@@ -197,9 +197,11 @@ void eval(char *cmdline)
     {
         setpgid(0, 0);
         Signal(SIGUSR1, empty_handler);
+        Signal(SIGINT, SIG_DFL);
+        Signal(SIGTSTP, SIG_DFL);
         // Wait for SIGUSR1 after job successfully created
         sigsuspend(&empty_set);
-        sigprocmask(SIG_SETMASK, &prev_fork, NULL);
+        sigprocmask(SIG_SETMASK, &empty_set, NULL);
         if (execve(argv[0], argv, environ) < 0)
         {
             printf("%s: Error occurred.\n", argv[0]);
@@ -375,6 +377,7 @@ void do_bgfg(char **argv)
     pid = job->pid;
     job->state = (strcmp(argv[0], "fg") ? BG : FG);
     kill(-pid, SIGCONT);
+
     if (job->state == BG) {
         printf("[%d] (%d) %s", id, pid, job->cmdline);
     } else {
@@ -415,14 +418,24 @@ void waitfg(pid_t pid)
  */
 void sigchld_handler(int sig)
 {
-    int olderrno = errno;
+    int olderrno = errno, status;
     sigset_t mask_all, prev_all;
     pid_t pid;
+    struct job_t *job;
     sigfillset(&mask_all);
-    while ((pid = waitpid(-1, NULL, WNOHANG)) > 0) {
-        sigprocmask(SIG_BLOCK, &mask_all, &prev_all);
-        deletejob(jobs, pid);
-        sigprocmask(SIG_SETMASK, &prev_all, NULL);
+    while ((pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0) {
+        job = getjobpid(jobs, pid);
+        if (!job) continue;
+        if (WIFSTOPPED(status)) {
+            printf("Job [%d] (%d) stopped by signal %d\n", job->jid, job->pid, SIGTSTP);
+            job->state = ST;
+        } else if (WIFEXITED(status) || WIFSIGNALED(status)) {
+            if (WIFSIGNALED(status))
+                printf("Job [%d] (%d) terminated by signal %d\n", job->jid, job->pid, SIGINT);
+            sigprocmask(SIG_BLOCK, &mask_all, &prev_all);
+            deletejob(jobs, pid);
+            sigprocmask(SIG_SETMASK, &prev_all, NULL);
+        }
     }
     errno = olderrno;
     return;
@@ -436,10 +449,9 @@ void sigchld_handler(int sig)
 void sigint_handler(int sig)
 {
     pid_t fg_gpid = fgpid(jobs);
+
     if (fg_gpid) {
-        int fgjid = pid2jid(fg_gpid);
         kill(-fg_gpid, SIGINT);
-        printf("Job [%d] (%d) terminated by signal %d\n", fgjid, fg_gpid, SIGINT);
     }
     return;
 }
@@ -453,12 +465,8 @@ void sigtstp_handler(int sig)
 {
     pid_t fg_gpid = fgpid(jobs);
     if (fg_gpid) {
-
-        struct job_t *job = getjobpid(jobs, fg_gpid);
-        int fgjid = job->jid;
-        job->state = ST;
+        getjobpid(jobs, fg_gpid)->state = ST;
         kill(-fg_gpid, SIGTSTP);
-        printf("Job [%d] (%d) stopped by signal %d\n", fgjid, fg_gpid, SIGTSTP);
     }
     return;
 }

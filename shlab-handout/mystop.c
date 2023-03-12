@@ -30,7 +30,6 @@ int main(int argc, char **argv)
 
     if (kill(-pid, SIGTSTP) < 0)
        fprintf(stderr, "kill (tstp) error");
-
     exit(0);
 
 }
