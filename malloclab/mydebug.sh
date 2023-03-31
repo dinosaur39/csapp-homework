@@ -1,3 +1,3 @@
 #!/bin/sh
 
-make && gdb --args ./mdriver -f ./traces/coalescing-bal.rep
+make && gdb --args ./mdriver -f ./traces/realloc-bal.rep

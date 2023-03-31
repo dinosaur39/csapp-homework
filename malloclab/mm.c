@@ -44,13 +44,14 @@ team_t team = {
 #define ADJUST_SIZE(size) (((size) <= DSIZE ? DSIZE : ALIGN(size)) + DSIZE) // actual size allocated when calling malloc/realloc
 #define CHUNKSIZE (1<<12)
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
+#define PTR_ADD(p, offset) ((void*)(p) + (int)(offset))
 
 #define PACK(size, alloc) ((size) | (alloc))
 
 #define GET(p) (*(unsigned int *)(p))
 #define GET_SIZE(p) (GET(p) & ~0x7)
 #define GET_ALLOC(p) (GET(p) & 0x7)
-#define PUT(p, val) (*(unsigned int *)(p) = (val))
+#define PUT(p, val) (*(unsigned int *)(p) = (unsigned int)(val))
 
 #define HDRP(bp) ((bp) - WSIZE)
 #define FTRP(bp) ((bp) + GET_SIZE(HDRP(bp)) - DSIZE)
@@ -59,8 +60,8 @@ team_t team = {
 #define PREV_FTRP(bp) ((bp) - DSIZE)
 #define NEXT_BLKP(bp) ((bp) + GET_SIZE(HDRP(bp)))
 #define PREV_BLKP(bp) ((bp) - GET_SIZE(PREV_FTRP(bp)))
-#define PRED_FREE_BLKP(bp) (*(unsigned int *)PREP(bp))
-#define SUCC_FREE_BLKP(bp) (*(unsigned int *)SUCP(bp))
+#define PRED_FREE_BLKP(bp) (void*)(*(unsigned int *)PREP(bp))
+#define SUCC_FREE_BLKP(bp) (void*)(*(unsigned int *)SUCP(bp))
 
 
 static void* heap_listp;// points to the prologue block
@@ -74,6 +75,7 @@ static void *extend_heap(size_t size);
 static void *coalesce(void *ptr);
 static void *find_fit(size_t size);
 static void place(void *ptr, size_t size);
+static void replace(void *ptr, size_t size, void *pred_blkp, void *succ_blkp);
 static void print_block_status(void* bp);
 static void print_block_status_verbose(void* bp);
 static int mm_check(void);
@@ -141,8 +143,8 @@ void *mm_malloc(size_t size)
 void mm_free(void *ptr)
 {
     if (((unsigned int)ptr % ALIGNMENT) || ptr < heap_listp) return;
-    size_t pred_free_blk = heap_listp, 
-           succ_free_blk = SUCC_FREE_BLKP(pred_free_blk);
+    void *pred_free_blk = heap_listp, 
+         *succ_free_blk = SUCC_FREE_BLKP(pred_free_blk);
 
     while(succ_free_blk) {
         if (ptr < succ_free_blk) break;
@@ -162,7 +164,6 @@ void *mm_realloc_ver1(void *ptr, size_t size)
 {
     void *new_ptr;
     size_t old_size, new_size;
-    ssize_t size_diff;
 
     //special cases
     if (ptr == NULL) {
@@ -176,8 +177,8 @@ void *mm_realloc_ver1(void *ptr, size_t size)
     new_size = ADJUST_SIZE(size);
     new_ptr = mm_malloc(size);
     old_size = old_size > new_size ? new_size : old_size;
-    for (int i = 0; i < (old_size - DSIZE)/WSIZE; i++) {
-        PUT((unsigned int*)new_ptr + i, GET((unsigned int*)ptr + i));
+    for (int i = 0; i < (old_size - DSIZE); i+= WSIZE) {
+        PUT(PTR_ADD(new_ptr, i), GET(PTR_ADD(ptr, i)));
     }
     mm_free(ptr);
     return new_ptr;
@@ -185,7 +186,7 @@ void *mm_realloc_ver1(void *ptr, size_t size)
 
 void *mm_realloc_ver2(void *ptr, size_t size)
 {
-    void *new_ptr, *next_ptr, *next_hdr;
+    void *new_ptr, *next_ptr, *next_hdr, *pred_blkp, *succ_blkp;
     size_t old_size, new_size;
     ssize_t size_diff;
 
@@ -201,20 +202,33 @@ void *mm_realloc_ver2(void *ptr, size_t size)
     old_size = GET_SIZE(HDRP(ptr));
     new_size = ADJUST_SIZE(size);
     size_diff = new_size - old_size;
-    if (size_diff <= 0) {
-        place(ptr, new_size);
-    } else {    
+
+    if (size_diff <= (-2 * DSIZE)) {
+        pred_blkp = heap_listp;
+        succ_blkp = SUCC_FREE_BLKP(pred_blkp);
+        while(succ_blkp) {
+            if (ptr < succ_blkp) break;
+            pred_blkp = succ_blkp;
+            succ_blkp = SUCC_FREE_BLKP(succ_blkp);
+        }
+        if (!succ_blkp) {
+            printf("realloc error\n");
+            return ptr;
+        }
+        replace(ptr, new_size, pred_blkp, succ_blkp);
+    } else if (size_diff > 0) {    
         next_ptr = NEXT_BLKP(ptr);
         next_hdr = HDRP(next_ptr);
-
-        if ( !GET_ALLOC(next_hdr) && GET_SIZE(next_hdr) >= size_diff) {
-            PUT(HDRP(ptr), PACK(GET_SIZE(next_hdr) + old_size, 0));
-            place(ptr, new_size);
+        if (!GET_ALLOC(next_hdr) && GET_SIZE(next_hdr) >= size_diff) {
+            pred_blkp = PRED_FREE_BLKP(next_ptr);
+            succ_blkp = SUCC_FREE_BLKP(next_ptr);
+            set_allocated_block(ptr, old_size + GET_SIZE(next_hdr));
+            replace(ptr, new_size, pred_blkp, succ_blkp);
         } else {
             new_ptr = mm_malloc(size);
             if (old_size > new_size) old_size = new_size;
-            for (int i = 0; i < (old_size - DSIZE); i++) {
-                PUT(new_ptr + i, GET(ptr + i));
+            for (int i = 0; i < (old_size - DSIZE); i += WSIZE) {
+                PUT(PTR_ADD(new_ptr, i), GET(PTR_ADD(ptr, i)));
             }
             mm_free(ptr);
             ptr = new_ptr;
@@ -225,7 +239,7 @@ void *mm_realloc_ver2(void *ptr, size_t size)
 
 void *mm_realloc(void *ptr, size_t size)
 {
-    return mm_realloc_ver1(ptr, size);
+    return mm_realloc_ver2(ptr, size);
 }
 
 /* 
@@ -233,21 +247,18 @@ void *mm_realloc(void *ptr, size_t size)
  */
 static void *extend_heap(size_t words)
 {
-    void *bp, *next_bp;
-    size_t size;
-    size = ((words + 1) & ~0x1) * WSIZE;
-    if ((bp = mem_sbrk(size)) == (void *)-1) {
-        printf("hi: %8x, lo: %8x\n", mem_heap_hi(), mem_heap_lo());
-        printf("diff: %x\n", mem_heap_hi()-mem_heap_lo());
-        mm_check();
+    void *bp, *last_blk;
+    size_t extend_size;
+    extend_size = ((words + 1) & ~0x1) * WSIZE;
+    if ((bp = mem_sbrk(extend_size)) == (void *)-1) {
         return NULL;
     }
     bp -= DSIZE; //two words storing the pred and succ address of last block
-    set_allocated_block(bp, size);//optimize
+    set_allocated_block(bp, extend_size);//optimize
 
-    next_bp = NEXT_BLKP(bp);
-    set_free_block(bp, size, 0, next_bp);
-    set_free_block(next_bp, 0, bp, -1);
+    last_blk = NEXT_BLKP(bp);
+    set_free_block(bp, extend_size, 0, last_blk);
+    set_free_block(last_blk, 0, bp, (void*)-1);
 
     mm_check();
     bp = coalesce(bp);
@@ -261,7 +272,7 @@ static void *coalesce(void *bp)
 {
     int prev_alloc = GET_ALLOC(PREV_FTRP(bp));
     int next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
-    void* size = GET_SIZE(HDRP(bp));
+    size_t size = GET_SIZE(HDRP(bp));
     void* sucp = SUCC_FREE_BLKP(bp);
 
     if (!next_alloc) {//coalesce current block and next block
@@ -296,27 +307,53 @@ static void *find_fit(size_t asize)
 
 /*
  * (static) place - allocate a block of `size` bytes(including header and footer), which bp point at.
- *      Doesn't check if the allocation is valid. Make sure that the block bp point at has at least `size` bytes.
+ *      Doesn't check if the allocation is valid. Make sure that 
+ * the block bp point at is free, and has at least `size` bytes.
  */
 static void place(void* bp, size_t size)
 {
-    size_t bp_size = GET_SIZE(HDRP(bp));
+    // size_t bp_size = GET_SIZE(HDRP(bp));
     void *prep = PRED_FREE_BLKP(bp), *sucp = SUCC_FREE_BLKP(bp); 
-
-    if ((bp_size - size) < MIN_BLK_SIZE) {
-        set_allocated_block(bp, bp_size);
-        PUT(PREP(sucp), prep);
-        PUT(SUCP(prep), sucp);
-    }
-    else {
-        set_allocated_block(bp, size);
-        bp = NEXT_BLKP(bp);
-        set_free_block(bp, bp_size - size, prep, sucp);
-        PUT(PREP(sucp), bp);
-        PUT(SUCP(prep), bp);
-    }
-    mm_check();
+    replace(bp, size, prep, sucp);
+    // if ((bp_size - size) < MIN_BLK_SIZE) {
+    //     set_allocated_block(bp, bp_size);
+    //     PUT(PREP(sucp), prep);
+    //     PUT(SUCP(prep), sucp);
+    // }
+    // else {
+    //     set_allocated_block(bp, size);
+    //     bp = NEXT_BLKP(bp);
+    //     set_free_block(bp, bp_size - size, prep, sucp);
+    //     PUT(PREP(sucp), bp);
+    //     PUT(SUCP(prep), bp);
+    // }
+    // mm_check();
 }
+
+/*
+ * (static) replace - seperate a block into two parts, the first
+ * part is an allocated block of `size` bytes, the second part, 
+ * if exists, is a free block.
+ * Make sure that the original block has at least `size` bytes.
+ * replace() will preserve `size`-DSIZE bytes of data in the 
+ * original block. 
+ */
+static void replace(void *ptr, size_t size, void *pred_blkp, void *succ_blkp)
+{
+    size_t blk_size = GET_SIZE(HDRP(ptr));
+    size_t size_diff = blk_size - size;
+    void *new_blk;
+    if (size_diff < MIN_BLK_SIZE) {
+        set_allocated_block(ptr, blk_size);
+        PUT(PREP(succ_blkp), pred_blkp);
+        PUT(SUCP(pred_blkp), succ_blkp);
+    } else {
+        set_allocated_block(ptr, size);
+        new_blk = NEXT_BLKP(ptr);
+        set_free_block(new_blk, size_diff, pred_blkp, succ_blkp);
+    }
+}
+
 
 /*
  * (static) conditioned_put - a helper function of set_block
@@ -359,7 +396,6 @@ static void set_allocated_block(void *bp, size_t size)
 static void set_free_block(void *bp, size_t size, void* prep, void *sucp)
 {
     set_block(bp, size, prep, sucp, 0);
-    
 }
 
 int mm_check(void) {
