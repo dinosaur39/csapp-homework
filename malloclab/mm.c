@@ -260,7 +260,7 @@ static void *extend_heap(size_t words)
     set_free_block(bp, extend_size, 0, last_blk);
     set_free_block(last_blk, 0, bp, (void*)-1);
 
-    mm_check();
+    //mm_check();
     bp = coalesce(bp);
     return bp;
 }
@@ -287,7 +287,7 @@ static void *coalesce(void *bp)
         set_free_block(bp, size, 0, sucp);
     }
     
-    mm_check();
+    //mm_check();
     return bp;
 }
 
