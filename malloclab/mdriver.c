@@ -653,7 +653,7 @@ static int eval_mm_valid(trace_t *trace, int tracenum, range_t **ranges)
 	    oldsize = trace->block_sizes[index];
 	    if (size < oldsize) oldsize = size;
 	    for (j = 0; j < oldsize; j++) {
-	      if (newp[j] != (index & 0xFF)) {
+	      if (newp[j] != (char)(index & 0xFF)) {
 		malloc_error(tracenum, i, "mm_realloc did not preserve the "
 			     "data from old block");
 		return 0;
