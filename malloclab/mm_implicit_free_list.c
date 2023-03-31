@@ -1,6 +1,13 @@
 /*
- * mm.c - An implementation of memory allocator by using explicit
- *        free list.
+ * mm-naive.c - The fastest, least memory-efficient malloc package.
+ * 
+ * In this naive approach, a block is allocated by simply incrementing
+ * the brk pointer.  A block is pure payload. There are no headers or
+ * footers.  Blocks are never coalesced or reused. Realloc is
+ * implemented directly using mm_malloc and mm_free.
+ *
+ * NOTE TO STUDENTS: Replace this header comment with your own header
+ * comment that gives a high level description of your solution.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,11 +45,11 @@ team_t team = {
 #define SIZE_T_SIZE 4
 
 /* My preprocessor macros */
-#define WSIZE SIZE_T_SIZE // size of the address of a byte
+#define WSIZE SIZE_T_SIZE
 #define DSIZE (2 * SIZE_T_SIZE)
 #define MIN_BLK_SIZE (2 * DSIZE)
-#define ADJUST_SIZE(size) (((size) <= DSIZE ? DSIZE : ALIGN(size)) + DSIZE) // actual size allocated when calling malloc/realloc
-#define CHUNKSIZE (1<<12)
+#define ADJUST_SIZE(size) (((size) <= DSIZE ? DSIZE : ALIGN(size)) + DSIZE)
+#define CHUNKSIZE (1<<13)
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 
 #define PACK(size, alloc) ((size) | (alloc))
@@ -52,18 +59,16 @@ team_t team = {
 #define GET_ALLOC(p) (GET(p) & 0x7)
 #define PUT(p, val) (*(unsigned int *)(p) = (val))
 
-#define HDRP(bp) ((bp) - WSIZE)
-#define FTRP(bp) ((bp) + GET_SIZE(HDRP(bp)) - DSIZE)
-#define PREP(bp) (bp)
-#define SUCP(bp) ((bp) + WSIZE)
-#define PREV_FTRP(bp) ((bp) - DSIZE)
-#define NEXT_BLKP(bp) ((bp) + GET_SIZE(HDRP(bp)))
-#define PREV_BLKP(bp) ((bp) - GET_SIZE(PREV_FTRP(bp)))
-#define PRED_FREE_BLKP(bp) (*(unsigned int *)PREP(bp))
-#define SUCC_FREE_BLKP(bp) (*(unsigned int *)SUCP(bp))
+#define HDRP(bp) ((char *)(bp) - WSIZE)
+#define FTRP(bp) ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE)
+#define PREV_FTRP(bp) ((char *)(bp) - DSIZE)
 
+#define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(HDRP(bp)))
+#define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(PREV_FTRP(bp)))
 
-static void* heap_listp;// points to the prologue block
+/* A pointer always point to the prologue block*/
+static void* heap_listp;
+static int mm_checker;
 
 /* function declaration in this file */
 int mm_init(void);
@@ -76,39 +81,29 @@ static void *find_fit(size_t size);
 static void place(void *ptr, size_t size);
 static void print_block_status(void* bp);
 static void print_block_status_verbose(void* bp);
+static int is_valid_block_pointer(void* bp);
 static int mm_check(void);
-static void set_allocated_block(void *bp, size_t size);
-static void set_free_block(void *bp, size_t size, void *prep, void *sucp);
-static void set_block(void *bp, size_t size, void *prep, void *sucp, int alloc);
 
 /* 
  * mm_init - initialize the malloc package.
  */
 int mm_init(void)
 {
-    void *next_blkp;
-
     mem_init();
-    if ((heap_listp = mem_sbrk(4 * DSIZE)) == (void *)-1) {
+    mm_checker = 1;
+    if ((heap_listp = mem_sbrk(4 * WSIZE)) == (void *)-1) {
         return -1;
     };
-    next_blkp = heap_listp + DSIZE * 3;
     PUT(heap_listp, 0);
-    PUT(heap_listp + (1 * WSIZE), PACK(DSIZE * 2, 1));
-    PUT(heap_listp + (2 * WSIZE), 0);
-    PUT(heap_listp + (3 * WSIZE), next_blkp);
-    PUT(heap_listp + (4 * WSIZE), PACK(DSIZE * 2, 1));
-    PUT(heap_listp + (5 * WSIZE), PACK(1, 0));
-    PUT(heap_listp + (6 * WSIZE), heap_listp + DSIZE);
-    PUT(heap_listp + (7 * WSIZE), 0);
+    PUT(heap_listp + WSIZE, PACK(DSIZE, 1));
+    PUT(heap_listp + (WSIZE * 2), PACK(DSIZE, 1));
+    PUT(heap_listp + (WSIZE * 3), PACK(0, 1));
     heap_listp += DSIZE;
 
-    
     if (extend_heap(CHUNKSIZE/WSIZE) == NULL) {
         fprintf(stderr, "extend_heap: extension error\n");
         return -1;
     }
-
     return 0;
 }
 
@@ -140,23 +135,16 @@ void *mm_malloc(size_t size)
  */
 void mm_free(void *ptr)
 {
-    if (((unsigned int)ptr % ALIGNMENT) || ptr < heap_listp) return;
-    size_t pred_free_blk = heap_listp, 
-           succ_free_blk = SUCC_FREE_BLKP(pred_free_blk);
-
-    while(succ_free_blk) {
-        if (ptr < succ_free_blk) break;
-        pred_free_blk = succ_free_blk;
-        succ_free_blk = SUCC_FREE_BLKP(succ_free_blk);
-    }
-    if (!succ_free_blk || !(GET_ALLOC(HDRP(ptr)))) return;
-
-    set_free_block(ptr, GET_SIZE(HDRP(ptr)), pred_free_blk, succ_free_blk);
+    // printf("free: %8x\n", ptr);
+    if (!is_valid_block_pointer(ptr)) return;
+    size_t size = GET_SIZE(HDRP(ptr));
+    PUT(FTRP(ptr), PACK(size, 0));
+    PUT(HDRP(ptr), PACK(size, 0));
     coalesce(ptr);
 }
 
 /*
- * mm_realloc_ver1 - Implemented simply in terms of mm_malloc and mm_free
+ * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
  */
 void *mm_realloc_ver1(void *ptr, size_t size)
 {
@@ -225,31 +213,27 @@ void *mm_realloc_ver2(void *ptr, size_t size)
 
 void *mm_realloc(void *ptr, size_t size)
 {
-    return mm_realloc_ver1(ptr, size);
+    return mm_realloc_ver2(ptr, size);
 }
-
 /* 
  * extend_heap - Extends the heap by `words` words. Returns pointer to the free block if succeed, and returns NULL if failed.
  */
 static void *extend_heap(size_t words)
 {
-    void *bp, *next_bp;
+    void *bp;
     size_t size;
+    mm_check();
     size = ((words + 1) & ~0x1) * WSIZE;
     if ((bp = mem_sbrk(size)) == (void *)-1) {
+        mm_check();
         printf("hi: %8x, lo: %8x\n", mem_heap_hi(), mem_heap_lo());
         printf("diff: %x\n", mem_heap_hi()-mem_heap_lo());
-        mm_check();
         return NULL;
     }
-    bp -= DSIZE; //two words storing the pred and succ address of last block
-    set_allocated_block(bp, size);//optimize
+    PUT(HDRP(bp), PACK(size, 0));
+    PUT(FTRP(bp), PACK(size, 0));
+    PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1));
 
-    next_bp = NEXT_BLKP(bp);
-    set_free_block(bp, size, 0, next_bp);
-    set_free_block(next_bp, 0, bp, -1);
-
-    mm_check();
     bp = coalesce(bp);
     return bp;
 }
@@ -259,24 +243,34 @@ static void *extend_heap(size_t words)
  */
 static void *coalesce(void *bp)
 {
-    int prev_alloc = GET_ALLOC(PREV_FTRP(bp));
-    int next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
-    void* size = GET_SIZE(HDRP(bp));
-    void* sucp = SUCC_FREE_BLKP(bp);
+    size_t prev_alloc = GET_ALLOC(PREV_FTRP(bp));
+    size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
+    size_t size = GET_SIZE(HDRP(bp));
 
-    if (!next_alloc) {//coalesce current block and next block
-        sucp = SUCC_FREE_BLKP(sucp);
-        size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
-        set_free_block(bp, size, 0, sucp);
+    if (prev_alloc && next_alloc) {
     }
 
-    if (!prev_alloc) {//coalesce current block and prev block
+    else if (prev_alloc && !next_alloc) {
+        size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
+        PUT(HDRP(bp), PACK(size, 0));
+        PUT(FTRP(bp), PACK(size, 0));
+    }
+
+    else if (!prev_alloc && next_alloc) {
         bp = PREV_BLKP(bp);
         size += GET_SIZE(HDRP(bp));
-        set_free_block(bp, size, 0, sucp);
+        PUT(HDRP(bp), PACK(size, 0));
+        PUT(FTRP(bp), PACK(size, 0));
     }
-    
-    mm_check();
+
+    else {
+        size += GET_SIZE(HDRP(NEXT_BLKP(bp)));
+        bp = PREV_BLKP(bp);
+        size += GET_SIZE(HDRP(bp));
+        PUT(HDRP(bp), PACK(size, 0));
+        PUT(FTRP(bp), PACK(size, 0));
+    }
+    // mm_checker = mm_check();
     return bp;
 }
 
@@ -285,9 +279,9 @@ static void *coalesce(void *bp)
  */
 static void *find_fit(size_t asize) 
 {
-    void *blkp = SUCC_FREE_BLKP(heap_listp);
-    for (; GET_SIZE(HDRP(blkp)) != 0; blkp = SUCC_FREE_BLKP(blkp)) {
-        if (GET_SIZE(HDRP(blkp)) >= asize) {
+    void *blkp = heap_listp;
+    for (; GET_SIZE(HDRP(blkp)) != 0; blkp = NEXT_BLKP(blkp)) {
+        if (GET_ALLOC(HDRP(blkp)) == 0 && GET_SIZE(HDRP(blkp)) >= asize) {
             return blkp;
         }
     }
@@ -301,65 +295,19 @@ static void *find_fit(size_t asize)
 static void place(void* bp, size_t size)
 {
     size_t bp_size = GET_SIZE(HDRP(bp));
-    void *prep = PRED_FREE_BLKP(bp), *sucp = SUCC_FREE_BLKP(bp); 
 
     if ((bp_size - size) < MIN_BLK_SIZE) {
-        set_allocated_block(bp, bp_size);
-        PUT(PREP(sucp), prep);
-        PUT(SUCP(prep), sucp);
+        PUT(HDRP(bp), PACK(bp_size, 1));
+        PUT(FTRP(bp), PACK(bp_size, 1));
     }
     else {
-        set_allocated_block(bp, size);
+        PUT(HDRP(bp), PACK(size, 1));
+        PUT(FTRP(bp), PACK(size, 1));
         bp = NEXT_BLKP(bp);
-        set_free_block(bp, bp_size - size, prep, sucp);
-        PUT(PREP(sucp), bp);
-        PUT(SUCP(prep), bp);
+        PUT(HDRP(bp), PACK(bp_size - size, 0));
+        PUT(FTRP(bp), PACK(bp_size - size, 0));
     }
-    mm_check();
-}
-
-/*
- * (static) conditioned_put - a helper function of set_block
- */
-static void conditioned_put(void *dst, void *val)
-{
-    if (val) {
-        if (val == (void*)(-1)) PUT(dst, 0);
-        else PUT(dst, val);
-    }
-}
-
-/*
- * (static) set_block - a helper function to set the information of a block
- * set prep/sucp to 0 if you don't want to change its value, and set prep/sucp
- * to -1 if you want to reset it to zero.
- */
-static void set_block(void *bp, size_t size, void *prep, void *sucp, int alloc)
-{
-    if (size) { 
-        PUT(HDRP(bp), PACK(size, alloc));
-        PUT(FTRP(bp), PACK(size, alloc));
-    } else { //the last block has no footer
-        PUT(HDRP(bp), PACK(0, 1));
-    }
-    if (!alloc) {
-        conditioned_put(PREP(bp), prep);
-        conditioned_put(SUCP(bp), sucp);
-        prep = PRED_FREE_BLKP(bp);
-        sucp = SUCC_FREE_BLKP(bp);
-        if (prep) PUT(SUCP(prep), bp);
-        if (sucp) PUT(PREP(sucp), bp);
-    }
-}
-
-static void set_allocated_block(void *bp, size_t size)
-{
-    set_block(bp, size, 0, 0, 1);
-}
-static void set_free_block(void *bp, size_t size, void* prep, void *sucp)
-{
-    set_block(bp, size, prep, sucp, 0);
-    
+    // mm_checker = mm_check();
 }
 
 int mm_check(void) {
@@ -367,15 +315,7 @@ int mm_check(void) {
     void *bp;
     for (bp = heap_listp; GET(HDRP(bp)) != end_status; bp = NEXT_BLKP(bp)) {
         if (GET(HDRP(bp)) != GET(FTRP(bp))) {
-            printf("error of block list:\n");
-            print_block_status_verbose(bp);
-            return 0;
-        }
-    }
-
-    for (bp = SUCC_FREE_BLKP(heap_listp); GET(HDRP(bp)) != end_status; bp = SUCC_FREE_BLKP(bp)) {
-        if (bp != SUCC_FREE_BLKP(PRED_FREE_BLKP(bp))) {
-            printf("error of free block list:\n");
+            printf("error:\n");
             print_block_status_verbose(bp);
             return 0;
         }
@@ -399,6 +339,16 @@ static void print_block_status_verbose(void* bp)
     printf("alloc: %d\n\n", GET_ALLOC(HDRP(bp)));
 }
 
+static int is_valid_block_pointer(void* bp) {
+    if ((size_t) bp <= (size_t) heap_listp) {
+        return 0;
+    }
+    for(void* blkp = heap_listp; GET(HDRP(blkp)) != 1; blkp = NEXT_BLKP(blkp)) {
+        if ((size_t) bp < (size_t) blkp) return 0;
+        else if (bp == blkp) return 1;
+    }
+    return 0;
+}
 
 
 
