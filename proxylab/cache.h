@@ -8,9 +8,9 @@
 #define MAX_OBJECT_SIZE 102400
 #define CACHE_MAXLINE 8192
 
-typedef struct {
-  cachenode_t *prev;
-  cachenode_t *next;
+typedef struct cache_node {
+  struct cache_node *prev;
+  struct cache_node *next;
   char uri[CACHE_MAXLINE];
   char *object;
   int size;
@@ -23,7 +23,7 @@ typedef struct {
 
 cache_t *init_cache(void);
 void free_cache(cache_t *cache);
-char *get_object(char *uri, cache_t *cache);
+int get_object(char *uri, cache_t *cache, char *objectp, int *sizep);
 void put_object(char *uri, char *object, int size, cache_t *cache);
 
 #endif

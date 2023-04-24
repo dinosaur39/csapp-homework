@@ -1,9 +1,7 @@
 #include "csapp.h"
 #include "fdbuf.h"
+#include "cache_wr.h"
 
-/* Recommended max cache and object sizes */
-#define MAX_CACHE_SIZE 1049000
-#define MAX_OBJECT_SIZE 102400
 #define FDBUFFER_SIZE 10
 #define MIN_THREAD_CNT 4
 
@@ -13,6 +11,7 @@ static const char *connection_hdr = "Connection: close\r\n";
 static const char *proxy_connection_hdr = "Proxy-Connection: close\r\n";
 
 static fdbuf_t fdbuf;
+static cache_wr_t *cache_p;
 
 void doproxy(int toclientfd);
 void parse_uri(char *uri, char *hostname, char *port, char *path);
@@ -24,8 +23,10 @@ void doproxy(int toclientfd)
 {
     int tohostfd;
     char buf[MAXLINE], uri[MAXLINE], hostname[MAXLINE], 
-         port[MAXLINE], path[MAXLINE], method[MAXLINE];
-    int len_host_res;
+         port[MAXLINE], path[MAXLINE], method[MAXLINE],
+         object[MAX_OBJECT_SIZE];
+    char *object_p = object;
+    int host_res_size, obj_size = 0;
     rio_t rio_client, rio_host;
 
     Rio_readinitb(&rio_client, toclientfd);
@@ -33,15 +34,33 @@ void doproxy(int toclientfd)
     sscanf(buf, "%s %s", method, uri);
     parse_uri(uri, hostname, port, path);
     printf("hostname: %s\nport: %s\npath: %s\n", hostname, port, path);
-    tohostfd = Open_clientfd(hostname, port);
-    printf("tohostfd: %d\n", tohostfd);
 
-    Rio_readinitb(&rio_host, tohostfd);
-    send_request(tohostfd, hostname, path, method, &rio_client);
-    while ((len_host_res = Rio_readnb(&rio_host, buf, MAXLINE)) > 0) {
-        Rio_writen(toclientfd, buf, len_host_res);
+
+    if (get_object_wr(uri, cache_p, object, &obj_size)) { //find object in proxy
+        Rio_writen(toclientfd, object, obj_size);
+    } else {
+        printf("object not found in cache\n");
+        tohostfd = Open_clientfd(hostname, port);
+        printf("tohostfd: %d\n", tohostfd);
+        Rio_readinitb(&rio_host, tohostfd);
+        send_request(tohostfd, hostname, path, method, &rio_client);
+        obj_size = 0;
+        while ((host_res_size = Rio_readnb(&rio_host, buf, MAXLINE)) > 0) {
+            Rio_writen(toclientfd, buf, host_res_size);
+            if (obj_size >= 0 && (obj_size += host_res_size) < MAX_OBJECT_SIZE) {
+                memcpy(object_p, buf, host_res_size);
+                object_p += host_res_size;
+            } else {
+                printf("object_size = %d\n", obj_size);
+                obj_size = -1;
+            }
+        }
+        if (obj_size > 0) {
+            printf("start caching\n");
+            put_object_wr(uri, object, obj_size, cache_p);
+        }
+        Close(tohostfd);
     }
-    Close(tohostfd);
 }
 
 void parse_uri(char *uri, char *hostname, char *port, char *path)
@@ -56,19 +75,23 @@ void parse_uri(char *uri, char *hostname, char *port, char *path)
         strcpy(port, "443");
         uri += strlen(https_protocol);
     } 
+
     ptr = strchr(uri, '/');
     if (ptr) {
         strcpy(path, ptr); 
+        *ptr = '\0';
     } else {
         strcpy(path, "/");
     }
-    *ptr = '\0';
+
     ptr = strchr(uri, ':');
     if (ptr) {
         *ptr++ = '\0';
         strcpy(port, ptr);
     }
+
     strcpy(hostname, uri);
+    sprintf(uri, "%s:%s%s", hostname, port, path);
 }
 
 void send_request(int tohostfd, char *hostname, char *path, char *method, rio_t *rp_headers)
@@ -99,7 +122,7 @@ void send_request(int tohostfd, char *hostname, char *path, char *method, rio_t 
     sprintf(buf, "%s %s HTTP/1.0\r\n%s%s%s%s\r\n", method, path
     , host_hdr, user_agent_hdr
     , connection_hdr, proxy_connection_hdr);
-    printf("------\nRequest headers\n%s------\n", buf);
+    //printf("------\nRequest headers\n%s------\n", buf);
     Rio_writen(tohostfd, buf, strlen(buf));
 }
 
@@ -145,6 +168,7 @@ int main(int argc, char* argv[])
     }
     listenfd = Open_listenfd(argv[1]);
     
+    cache_p = init_cache_wr();
     fdbuf_init(&fdbuf, FDBUFFER_SIZE);
     for (i = 0; i < MIN_THREAD_CNT; i++) {
         Pthread_create(&tid, NULL, workthread, NULL);
