@@ -26,9 +26,4 @@ void free_cache(cache_t *cache);
 char *get_object(char *uri, cache_t *cache);
 void put_object(char *uri, char *object, int size, cache_t *cache);
 
-static cachenode_t *create_cachenode(char *uri, char *object, int size);
-static void remove_cachenode(cachenode_t *node);
-static void insert_cachenode(cachenode_t *node, cache_t *cache);
-static void free_cachenode(cachenode_t *node);
-
 #endif

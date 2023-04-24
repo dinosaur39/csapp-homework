@@ -1,5 +1,10 @@
 #include "cache.h"
 
+static cachenode_t *create_cachenode(char *uri, char *object, int size);
+static void remove_cachenode(cachenode_t *node);
+static void insert_cachenode(cachenode_t *node, cache_t *cache);
+static void free_cachenode(cachenode_t *node);
+
 cache_t *init_cache(void)
 {
   cache_t *cache = (cache_t*) Malloc(sizeof(cache_t));
