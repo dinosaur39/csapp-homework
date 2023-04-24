@@ -1,18 +1,24 @@
 #include "csapp.h"
+#include "fdbuf.h"
 
 /* Recommended max cache and object sizes */
 #define MAX_CACHE_SIZE 1049000
 #define MAX_OBJECT_SIZE 102400
+#define FDBUFFER_SIZE 10
+#define MIN_THREAD_CNT 4
 
 /* You won't lose style points for including this long line in your code */
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
 static const char *connection_hdr = "Connection: close\r\n";
 static const char *proxy_connection_hdr = "Proxy-Connection: close\r\n";
 
+static fdbuf_t fdbuf;
+
 void doproxy(int toclientfd);
 void parse_uri(char *uri, char *hostname, char *port, char *path);
 void send_request(int tohostfd, char *hostname, char *path, char *method, rio_t *rp_headers);
 void clienterror(int fd, char *errnum, char *shortmsg);
+void *workthread(void *vargp);
 
 void doproxy(int toclientfd)
 {
@@ -104,13 +110,24 @@ void clienterror(int fd, char *errnum, char *shortmsg)
     Rio_writen(fd, buf, strlen(buf));
 }
 
+void *workthread(void *vargp)
+{
+    Pthread_detach(pthread_self());
+    while (1) {
+        int connfd = fdbuf_pop(&fdbuf);
+        doproxy(connfd);
+        Close(connfd);
+    }
+}
+
 int main(int argc, char* argv[])
 {
     int portnum;
-    int listenfd, connfd;
+    int listenfd, connfd, i;
     char clienthost[MAXLINE], clientport[MAXLINE];
     socklen_t clientlen;
     struct sockaddr_storage clientaddr;
+    pthread_t tid;
 
     if (argc != 2) {
         fprintf(stderr, "usage: %s <port>\n", argv[0]);
@@ -126,16 +143,20 @@ int main(int argc, char* argv[])
         fprintf(stderr, "error: port number must be greater than 1024 and less than 65536.\n");
         return 0;
     }
-    
     listenfd = Open_listenfd(argv[1]);
+    
+    fdbuf_init(&fdbuf, FDBUFFER_SIZE);
+    for (i = 0; i < MIN_THREAD_CNT; i++) {
+        Pthread_create(&tid, NULL, workthread, NULL);
+    }
+
     while (1) {
         clientlen = sizeof(clientaddr);
         connfd = Accept(listenfd, (SA *)&clientaddr, &clientlen);
         Getnameinfo((SA *) &clientaddr, clientlen, clienthost, MAXLINE, clientport, MAXLINE, 0);
         printf("Accepted connection from (%s, %s)\n", clienthost, clientport);
         printf("Start proxy\n");
-        doproxy(connfd);
-        Close(connfd);
+        fdbuf_push(&fdbuf, connfd);
     }
     return 0;
 }
